@@ -201,9 +201,9 @@ if __name__ == '__main__':
     parser.add_argument('--task_description_id', type=int, default=2)
     parser.add_argument('--example_template_id', type=int, default=1)
     parser.add_argument('--temperature', default=0.0, type=float)
-    parser.add_argument('--cot_n', default=1, type=int)
     parser.add_argument('--logprobs', default=5)
     parser.add_argument('--api_key', type=str)
+    parser.add_argument('--max_tokens', type=int, default=200)
 
     args = parser.parse_args()
     print(args)
@@ -218,11 +218,12 @@ if __name__ == '__main__':
     example_template_id = args.example_template_id
     temperature = args.temperature
     logprobs = args.logprobs
+    max_tokens = args.max_tokens
 
     request = Request(
         engine=model_name,  
         temperature=temperature,  
-        max_tokens=200,  
+        max_tokens=max_tokens,  
         top_p=1,  
         frequency_penalty=0,  
         presence_penalty=0,  
