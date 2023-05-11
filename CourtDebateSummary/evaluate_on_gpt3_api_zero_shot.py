@@ -23,22 +23,12 @@ from rouge import Rouge
 
 
 TASK_DESCRIPTION = [
-    """Given two sentences, the semantic textual similarity problem attempts to decide whether they are similar in meaning.
-If the two sentences are the most similar, the text similarity between the two sentences is 5.0.
-If the two sentences are the least similar, the text similarity between the two sentences is 0.0."""
+    """请为以下庭审对话撰写一份摘要，要求摘要能够保留对话的重要信息。其中“审”代表法官，“原”代表原告，“被”代表被告。"""
     ]
 
-ANSWER_TEMPLATE = [
-    "The text similarity between \"{s_a}\" and \"{s_b}\" is", 
-    "Sentence A: {s_a}\nSentence B: {s_b}\nText similarity:",
-    "Sentence A: {s_a}\nSentence B: {s_b}\nPlease first articulate clues and the reasoning process for determining the similarity score between the two sentences. Next, based on the clues and the reasoning process, assign the similarity score between the two sentences.",
-    "Sentence A: {s_a}\nSentence B: {s_b}\nPlease first articulate clues (positive or negative) and the reasoning process for determining the similarity score between the two sentences. Next, based on the clues and the reasoning process, assign the similarity score between the two sentences.",
-    "Sentence A: {s_a}\nSentence B: {s_b}\nPlease first assign the similarity score between the two sentences. Next, articulate clues and the reasoning process for determining the similarity score.",
-    "Word A: {s_a}\nWord B: {s_b}\nSimilarity Score:",
-    "Word A: {s_a}\nWord B: {s_b}\nPlease first list the synonyms for the two words. Next, based on the two words and the synonyms, give the similarity score between the two words.",
+ANSWER_TEMPLATE = ["庭审对话:\n{dialogue}\n请为上述对话的撰写一份摘要："
     ]
 
-NUMBER_PATTERN = r"\d+\.\d+"
 
 class Request(object):
     def __init__(self, engine, temperature, max_tokens, top_p, n, log_probs, frequency_penalty, presence_penalty, best_of):
@@ -96,7 +86,7 @@ def read_datasets(path):
 
 def read_dump_file(dump_path):
     fr = open(dump_path, 'r')
-    g_s, p_s = [], []
+    golden_list, pred_list = [], []
 
     for l in fr.readlines():
         try:
@@ -106,35 +96,37 @@ def read_dump_file(dump_path):
 
         if "input" not in d.keys():
             continue
-        g_s.append(d['g_score'])
-        p_s.append(d['p_score'])
+        golden_list.append(d['golden'])
+        pred_list.append(d['pred'])
     fr.close()
+    return golden_list, pred_list
 
-    return g_s, p_s
 
+def metrics(golden_list, pred_list):
+    
+    rouge = Rouge()
+    rouge_1, rouge_2, rouge_l = 0, 0, 0 
 
-def post_processing_response(resp, input_list, sample_id_list, golden_scores, wf, cot_n, example_template_id):
+    for pred, ref in tqdm(zip(pred_list, golden_list)):
+        scores = rouge.get_scores(pred, ref)
+        rouge_1 += scores[0]['rouge-1']['f']
+        rouge_2 += scores[0]['rouge-2']['f']
+        rouge_l += scores[0]['rouge-l']['f']
+
+    total = len(golden_list)
+    rouge_1 = rouge_1/total
+    rouge_2 = rouge_2/total
+    rouge_l = rouge_l/total
+
+    scores = {"rouge1": rouge_1, "rouge2": rouge_2, "rougel": rouge_l}
+
+    return scores
+
+def post_processing_response(resp, input_list, sample_id_list, golden_label_list, wf):
+
     for resp_id in range(len(input_list)):
-        text = [item['text'].strip() for item in resp['choices'][resp_id*cot_n: resp_id*cot_n + cot_n]]
-        sum, count = 0, 0
-        for single_res in text:
-            match = re.findall(NUMBER_PATTERN, single_res)
-            if len(match) >= 1:
-                if example_template_id in [2,3]: # first reason, second score
-                    num = float(match[-1])
-                else:
-                    num = float(match[0])
-                sum += num
-                count += 1
-
-        if count == 0:
-            print("Did not find number in response:", text)
-            continue
-            
-        p_s = sum / count
-
-        tmp = {"sample_id": sample_id_list[resp_id], "input": input_list[resp_id],
-                    "response": resp['choices'][resp_id*cot_n: resp_id*cot_n + cot_n], "p_score": p_s, "g_score": golden_scores[resp_id], "model": resp['model']}
+        resp_text = resp['choices'][0]['text'].strip()
+        tmp = {"sample_id": sample_id_list[resp_id], "input": input_list[resp_id], "response": resp['choices'][0], "pred":resp_text , "golden": golden_label_list[resp_id], "model": resp['model']}
         wf.write(json.dumps(tmp) + "\n")
 
 
@@ -150,43 +142,41 @@ def zero_shot_evaluate_on_llm(request: Request, testdataset: List[Tuple[str, str
         task_description_id (int): decide which task description is used
         example_template_id (int): decide which example template is used
     """
-    prompt_lists = [TASK_DESCRIPTION[task_description_id]]
+    prompts = [TASK_DESCRIPTION[task_description_id]]
     if os.path.exists(dump_path):
         print(f"File path {dump_path} exists")
         wf = open(dump_path, 'a')
     else:
         print(f"Create file {dump_path}")
         wf = open(dump_path, 'w+')
-    prompts = '\n'.join(prompt_lists)
 
-    input_list, sample_id_list, golden_scores = [], [], []
+    input_list, sample_id_list, golden_label_list = [], [], []
     for sample_id in range(start, end):
-        s, t, g_s = testdataset[sample_id]
+        dialogue, summary = testdataset[sample_id]
         template = ANSWER_TEMPLATE[example_template_id]
-        test_example = template.format(s_a=s, s_b=t)
+        test_example = template.format(dialogue=dialogue)
         input = f"{prompts}\n{test_example}"
         input_list.append(input)
         sample_id_list.append(sample_id)
-        golden_scores.append(g_s)
+        golden_label_list.append(summary)
         if len(input_list) == 5:
             resp = request.get_multiple_sample(input_list)
-            post_processing_response(resp, input_list, sample_id_list, golden_scores, wf, cot_n, example_template_id)
+            post_processing_response(resp, input_list, sample_id_list, golden_label_list, wf)
             time.sleep(5)
             print("#", end="", flush=True)
-            input_list, sample_id_list, golden_scores = [], [], []
+            input_list, sample_id_list, golden_label_list = [], [], []
 
     if len(input_list):
         resp = request.get_multiple_sample(input_list)
-        post_processing_response(resp, input_list, sample_id_list, golden_scores, wf, cot_n, example_template_id)
+        post_processing_response(resp, input_list, sample_id_list, golden_label_list, wf)
 
     wf.close()
 
-    g_scores, pred_scores = read_dump_file(dump_path)
-    spearman_corr = spearmanr(g_scores, pred_scores)
-    print("spearman correlation:", spearman_corr)
+    golden_list, pred_list = read_dump_file(dump_path)
+    score = metrics(golden_list, pred_list)
 
     wf = open(dump_path, 'a')
-    wf.write(json.dumps({"spearman_corr": spearman_corr})+"\n")
+    wf.write(json.dumps(score)+"\n")
 
 
 if __name__ == '__main__':
