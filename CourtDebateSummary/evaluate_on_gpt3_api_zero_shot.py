@@ -59,7 +59,6 @@ class Request(object):
                 )
                 return response
             except Exception as err:
-                print("request error:")
                 logging.exception(err)
                 time.sleep(60)
 
@@ -181,8 +180,7 @@ def zero_shot_evaluate_on_llm(request: Request, testdataset: List[Tuple[str, str
 
 if __name__ == '__main__':
     print(datetime.datetime.now())
-    BASE = "/data/ganleilei/law/ContrastiveLJP"
-    parser = argparse.ArgumentParser(description='GPT3 for text similarity')
+    parser = argparse.ArgumentParser(description='Chinese Legal GPT')
     parser.add_argument('--testdata_path', required=True, type=str)
     parser.add_argument('--dump_path', default='', type=str)
     parser.add_argument('--start', default=0, type=int)
